@@ -26,9 +26,9 @@ metadata
         capability "Refresh"
         capability "Initialize"
         capability "ContactSensor"
+        capability "Switch"
         
         attribute "driverStatus", "string"
-        attribute "deviceStatus", "string"
         
         attribute "cookerStatus", "string"
         
@@ -109,8 +109,7 @@ def uninstalled() {
 }
 
 def parse(String description) {
-    use (groovy.time.TimeCategory) {
-    
+
         def decoded = interfaces.mqtt.parseMessage(description)
         log.debug "parse(${decoded})"
     
@@ -118,6 +117,7 @@ def parse(String description) {
             def jsonSlurper = new JsonSlurper()
             def payload = jsonSlurper.parseText(decoded.payload)
             logDebug("Received JSON payload: ${payload}")
+            if (payload.name == "protocol") turnOnDevice()
             if (payload.temps  != null) {
                 def pitTemp = convertReceivedUnits(payload.temps[0])
                 def probe1Temp = convertReceivedUnits(payload.temps[1])
@@ -129,7 +129,7 @@ def parse(String description) {
                 sendEvent(name: "probe2Temp", value: probe2Temp, isStateChange: true)
                 sendEvent(name: "probe3Temp", value: probe3Temp, isStateChange: true)
             }
-            if (payload.set_temp  != null) {
+            if (payload.set_temp != null) {
                 def targetPitTemp = convertReceivedUnits(payload.set_temp)
                 sendEvent(name: "pitTempTarget", value: targetPitTemp, isStateChange: true)
             }
@@ -162,12 +162,8 @@ def parse(String description) {
                 if (payload.range != null) sendEvent(name: "pitAlarmTemp", value: convertReceivedUnits(payload.range), isStateChange: true)
             }
             else if (payload.name == "opened" || payload.name == "closed") sendEvent(name: "contact", value: payload.name, isStateChange: true, descriptionText: "Cooker is ${payload.name}")
-
+            else if (payload.name == "disconnected") turnOffDevice()
         }
-        else if (decoded.topic == "hubitat/${device.getDeviceNetworkId()}/status/device") {
-            sendEvent(name: "deviceStatus", value: decoded.payload)
-        }
-    }
 }
 
 def convertReceivedUnits(value) {
@@ -238,7 +234,7 @@ def connectToMqtt() {
     
     if (!interfaces.mqtt.isConnected()) {        
         logDebug("Connecting to MQTT...")
-        interfaces.mqtt.connect("tcp://${flamebossServer}:1883", device.getDeviceNetworkId() + "driver", username, authToken)
+        interfaces.mqtt.connect("tcp://${flamebossServer}:1883", device.getDeviceNetworkId() + "driver", "T-" + username, authToken)
         
         runIn(1, subscribe)
     }
@@ -255,6 +251,29 @@ def subscribe() {
     interfaces.mqtt.subscribe(topicNameAttribute("console"))
     interfaces.mqtt.subscribe(topicNameAttribute("adc"))
 }
+            
+def turnOffDevice() {
+    off()   
+    sendEvent(name: "pitTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "probe1Temp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "probe2Temp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "probe3Temp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "pitTempTarget", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "fanSpeed", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "meat1DoneTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "meat1KeepWarmTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "meat2DoneTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "meat2KeepWarmTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "meat3DoneTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "meat3KeepWarmTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "pitAlarmEnabled", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "pitAlarmTemp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "contact", value: "Device Offline", isStateChange: true)
+}
+
+def turnOnDevice() {
+    on()     
+}
 
 
 def topicNameCommand() {
@@ -267,11 +286,18 @@ def topicNameAttribute(String attribute) {
     return topicName
 }
 
+def on() {
+    sendEvent(name: "switch", value: "on")
+}
+
+def off() {
+    sendEvent(name: "switch", value: "off")
+}
 
 
 def refresh()
 {
-
+    initialize()
 }
 
 def logDebug(msg) 
