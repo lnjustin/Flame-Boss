@@ -27,36 +27,20 @@ metadata
         capability "Initialize"
         capability "ContactSensor"
         capability "Switch"
+        capability "TemperatureMeasurement"  // for pit temp
+        capability "PushableButton"  // for pit alarm
         
         attribute "driverStatus", "string"
         
-        attribute "cookerStatus", "string"
-        
-        attribute "pitTemp", "number"
         attribute "pitTempTarget", "number"
         attribute "pitAlarmTemp", "number"
         attribute "pitAlarmEnabled", "string"
         
-        attribute "probe1Temp", "number"
-        attribute "probe2Temp", "number"
-        attribute "probe3Temp", "number"
-        
         attribute "fanSpeed", "number"
         
-        attribute "meat1DoneTemp", "number"
-        attribute "meat1KeepWarmTemp", "number"
-        attribute "meat2DoneTemp", "number"
-        attribute "meat2KeepWarmTemp", "number"
-        attribute "meat3DoneTemp", "number"
-        attribute "meat3KeepWarmTemp", "number"
-        
-        command "setPitTemp", ["number"]
+        command "setPitTargetTemp", ["number"]
         command "setPitAlarm",[[name:"enabled*",type:"ENUM",description:"Alarm On/Off", constraints:["Enabled", "Disabled"]],
                                [name:"pitAlarmTemp*:",type:"NUMBER",desciption:"Pit Alarm Temp"]]        
-
-        command "setMeat",[[name:"sensorNum*",type:"NUMBER",description:"Probe Number"],
-                               [name:"doneTemp*:",type:"NUMBER",desciption:"Meat Done Temp"],
-                               [name:"warmTemp*:",type:"NUMBER",desciption:"Meat Warm Temp"]]
     }
 }
 
@@ -93,19 +77,64 @@ def configure()
 
 def initialize() {
     logDebug("initialize()")
-    
+    device.updateSetting("numberOfButtons", 2)  // button 1 is for pit alarm; button 2 is for vent advice
+    createChildren()
     if (interfaces.mqtt.isConnected()) {
         logDebug("Disconnecting...")
         interfaces.mqtt.disconnect()
-    }
-        
-   
-    runIn(1, connectToMqtt)
+    } 
+    turnOffDevices()
+    if (deviceID != null && flamebossServer != null && username != null && authToken != null) runIn(1, connectToMqtt)
+    else log.error "Missing credentials for Flameboss. Input credentials in the Preferences section of the device."
 }
 
+def getFlamebossProbeID(probeNum) {
+    return "FlamebossProbe${probeNum}"    
+}
+
+def getFlamebossProbeName(probeNum) {
+    return "Probe ${probeNum}"
+}
+
+def createChildren() {
+    def probe1Child = getChildDevice(getFlamebossProbeID(1))  
+    def probe2Child = getChildDevice(getFlamebossProbeID(2)) 
+    def probe3Child = getChildDevice(getFlamebossProbeID(3)) 
+    
+    if (probe1Child == null) {
+        probe1Child = addChildDevice("lnjustin", "Flameboss Probe", getFlamebossProbeID(1), [label:getFlamebossProbeName(1), isComponent:true, name:getFlamebossProbeName(1)])
+        if (probe1Child != null) {
+            probe1Child.turnOffDevice()
+            probe1Child.updateSetting("numberOfButtons", 1)
+        }
+    }
+    if (probe2Child == null) {
+        probe2Child = addChildDevice("lnjustin", "Flameboss Probe", getFlamebossProbeID(2), [label:getFlamebossProbeName(2), isComponent:true, name:getFlamebossProbeName(2)])
+        if (probe2Child != null) {
+            probe2Child.turnOffDevice()
+            probe2Child.updateSetting("numberOfButtons", 1)
+        }
+    }
+    if (probe3Child == null) {
+        probe3Child = addChildDevice("lnjustin", "Flameboss Probe", getFlamebossProbeID(3), [label:getFlamebossProbeName(3), isComponent:true, name:getFlamebossProbeName(3)])
+        if (probe3Child != null) {
+            probe3Child.turnOffDevice()
+            probe3Child.updateSetting("numberOfButtons", 1)
+        }
+    }
+}
 
 def uninstalled() {
     interfaces.mqtt.disconnect()
+    deleteChildren()
+}
+
+def deleteChildren()
+{
+    for(child in getChildDevices())
+    {
+        deleteChildDevice(child.deviceNetworkId)
+    }
 }
 
 def parse(String description) {
@@ -117,17 +146,24 @@ def parse(String description) {
             def jsonSlurper = new JsonSlurper()
             def payload = jsonSlurper.parseText(decoded.payload)
             logDebug("Received JSON payload: ${payload}")
-            if (payload.name == "protocol") turnOnDevice()
+            if (payload.name == "protocol") {
+                turnOnDevices()
+            }
             if (payload.temps  != null) {
                 def pitTemp = convertReceivedUnits(payload.temps[0])
-                def probe1Temp = convertReceivedUnits(payload.temps[1])
+                sendEvent(name: "temperature", value: pitTemp, isStateChange: true)
+                
+                def probe1Temp = (payload.temps[1] != nulll) ? convertReceivedUnits(payload.temps[1]) : null
                 def probe2Temp = (payload.temps[2] != nulll) ? convertReceivedUnits(payload.temps[2]) : null
                 def probe3Temp = (payload.temps[3] != nulll) ? convertReceivedUnits(payload.temps[3]) : null
                 
-                sendEvent(name: "pitTemp", value: pitTemp, isStateChange: true)
-                sendEvent(name: "probe1Temp", value: probe1Temp, isStateChange: true)
-                sendEvent(name: "probe2Temp", value: probe2Temp, isStateChange: true)
-                sendEvent(name: "probe3Temp", value: probe3Temp, isStateChange: true)
+                def probe1Child = getChildDevice(getFlamebossProbeID(1))  
+                def probe2Child = getChildDevice(getFlamebossProbeID(2)) 
+                def probe3Child = getChildDevice(getFlamebossProbeID(3)) 
+                
+                if (probe1Child) probe1Child.sendEvent(name: "temperature", value: probe1Temp, isStateChange: true)
+                if (probe2Child) probe2Child.sendEvent(name: "temperature", value: probe2Temp, isStateChange: true)
+                if (probe3Child) probe3Child.sendEvent(name: "temperature", value: probe3Temp, isStateChange: true)
             }
             if (payload.set_temp != null) {
                 def targetPitTemp = convertReceivedUnits(payload.set_temp)
@@ -144,26 +180,38 @@ def parse(String description) {
             def payload = jsonSlurper.parseText(decoded.payload)
 
             if (payload.name == "meat_alarm") {
-                if (payload.sensor == 1) {
-                    sendEvent(name: "meat1DoneTemp", value: convertReceivedUnits(payload.done_temp), isStateChange: true)
-                    sendEvent(name: "meat1KeepWarmTemp", value: convertReceivedUnits(payload.warm_temp), isStateChange: true)
-                }
-                else if (payload.sensor == 2) {
-                    sendEvent(name: "meat2DoneTemp", value: convertReceivedUnits(payload.done_temp), isStateChange: true)
-                    sendEvent(name: "meat2KeepWarmTemp", value: convertReceivedUnits(payload.warm_temp), isStateChange: true)
-                }
-                else if (payload.sensor == 3) {
-                    sendEvent(name: "meat3DoneTemp", value: convertReceivedUnits(payload.done_temp), isStateChange: true)
-                    sendEvent(name: "meat3KeepWarmTemp", value: convertReceivedUnits(payload.warm_temp), isStateChange: true)
+                if (payload.sensor == 1 || payload.sensor == 2 || payload.sensor == 3) {
+                    def probeChild = getChildDevice(getFlamebossProbeID(payload.sensor)) 
+                    if (probeChild) {
+                        probeChild.sendEvent(name: "meatDoneTemp", value: convertReceivedUnits(payload.done_temp), isStateChange: true)
+                        probeChild.sendEvent(name: "meatKeepWarmTemp", value: convertReceivedUnits(payload.warm_temp), isStateChange: true)
+                        probeChild.sendEvent(name: "meatAlarm", value: getMeatActionFriendly(payload.action), isStateChange: true)
+                    }
                 }
             }
             else if (payload.name == "pit_alarm") {
                 if (payload.enabled != null) sendEvent(name: "pitAlarmEnabled", value: payload.enabled, isStateChange: true)
                 if (payload.range != null) sendEvent(name: "pitAlarmTemp", value: convertReceivedUnits(payload.range), isStateChange: true)
             }
+            else if (payload.name == "meat_alarm_triggered") {
+                def probeChild = getChildDevice(getFlamebossProbeID(payload.sensor)) 
+                if (probeChild) probeChild.push(1)               
+            }
+            else if (payload.name == "pit_alarm_triggered") {
+                push(1)               
+            }
+            else if (payload.name == "vent_advice") {
+                push(2)               
+            }            
             else if (payload.name == "opened" || payload.name == "closed") sendEvent(name: "contact", value: payload.name, isStateChange: true, descriptionText: "Cooker is ${payload.name}")
-            else if (payload.name == "disconnected") turnOffDevice()
+            else if (payload.name == "disconnected") {
+                 turnOffDevices()
+            }
         }
+}
+
+def push(buttonNumber) {
+    sendEvent(name: "pushed", value: buttonNumber, isStateChange: true)
 }
 
 def convertReceivedUnits(value) {
@@ -187,7 +235,7 @@ def convertUnitsToSend(BigDecimal value) {
     }
 }
 
-def setPitTemp(temp) {
+def setPitTargetTemp(temp) {
     def commandPayload = new JsonOutput().toJson([name:"set_temp", value:"${convertUnitsToSend(temp)}"])
     logDebug("Setting Pit: ${commandPayload}")
     interfaces.mqtt.publish(topicNameCommand(), commandPayload)    
@@ -199,13 +247,39 @@ def setPitAlarm(enabled, temp) {
     interfaces.mqtt.publish(topicNameCommand(), commandPayload)    
 }
 
-def setMeat(sensorNum, doneTemp, warmTemp) {
-    // TO DO: meat alarm action
-    def commandPayload = new JsonOutput().toJson([name:"meat_alarm", sensor:sensorNum, action:"off", done_temp: convertUnitsToSend(doneTemp), warm_temp:convertUnitsToSend(warmTemp)])
-    logDebug("Setting meat: ${commandPayload}")
-    interfaces.mqtt.publish(topicNameCommand(), commandPayload)    
+def setMeat(deviceNetworkId, action, doneTemp, warmTemp) {
+    def sensorNum = getSensorNum(deviceNetworkId)
+    def actionKey = getMeatActionKey(action)
+    if (sensorNum >= 1 && sensorNum <= 3) {
+        def commandPayload = new JsonOutput().toJson([name:"meat_alarm", sensor:sensorNum, action:actionKey, done_temp: convertUnitsToSend(doneTemp), warm_temp:convertUnitsToSend(warmTemp)])
+        logDebug("Setting Meat: ${commandPayload}")
+        interfaces.mqtt.publish(topicNameCommand(), commandPayload) 
+    }
 }
 
+def getMeatActionKey(action) {
+    def key = null
+    if (action == "Off") key = "off"
+    else if (action == "On") key = "on"
+    else if (action == "Keep Warm") key = "keep_warm"
+    return key
+}
+
+def getMeatActionFriendly(actionKey) {
+    def friendly = null
+    if (actionKey == "off") friendly = "Off"
+    else if (actionKey == "on") friendly = "On"
+    else if (actionKey == "keep_warm") friendly = "Keep Warm"
+    return friendly
+}
+
+def getSensorNum(deviceNetworkId) {
+    def sensorNum = null
+    if (deviceNetworkId == getFlamebossProbeID(1)) sensorNum = 1
+    else if (deviceNetworkId == getFlamebossProbeID(2)) sensorNum = 2
+    else if (deviceNetworkId == getFlamebossProbeID(3)) sensorNum = 3   
+    return sensorNum
+}
 
 def mqttClientStatus(String status) {
     logDebug("mqttClientStatus(${status})")
@@ -252,29 +326,40 @@ def subscribe() {
     interfaces.mqtt.subscribe(topicNameAttribute("adc"))
 }
             
-def turnOffDevice() {
+def turnOffDevices() {
     off()   
-    sendEvent(name: "pitTemp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "probe1Temp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "probe2Temp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "probe3Temp", value: "Device Offline", isStateChange: true)
+    sendEvent(name: "temperature", value: "Device Offline", isStateChange: true)
     sendEvent(name: "pitTempTarget", value: "Device Offline", isStateChange: true)
     sendEvent(name: "fanSpeed", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "meat1DoneTemp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "meat1KeepWarmTemp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "meat2DoneTemp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "meat2KeepWarmTemp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "meat3DoneTemp", value: "Device Offline", isStateChange: true)
-    sendEvent(name: "meat3KeepWarmTemp", value: "Device Offline", isStateChange: true)
     sendEvent(name: "pitAlarmEnabled", value: "Device Offline", isStateChange: true)
     sendEvent(name: "pitAlarmTemp", value: "Device Offline", isStateChange: true)
     sendEvent(name: "contact", value: "Device Offline", isStateChange: true)
+    
+    def probe1Child = getChildDevice(getFlamebossProbeID(1))  
+    def probe2Child = getChildDevice(getFlamebossProbeID(2)) 
+    def probe3Child = getChildDevice(getFlamebossProbeID(3)) 
+                
+    if (probe1Child) probe1Child.turnOffDevice()
+    if (probe2Child) probe2Child.turnOffDevice()
+    if (probe3Child) probe3Child.turnOffDevice()
 }
 
-def turnOnDevice() {
-    on()     
-}
+def turnOnDevices() {
+    on()   
+    if (currentValue("temperature") == "Device Offline" || currentValue("temperature") == null) sendEvent(name: "temperature", value: "No Data", isStateChange: true)
+    if (currentValue("fanSpeed") == "Device Offline" || currentValue("fanSpeed") == null) sendEvent(name: "fanSpeed", value: "No Data", isStateChange: true)
+    if (currentValue("pitAlarmEnabled") == "Device Offline" || currentValue("pitAlarmEnabled") == null) sendEvent(name: "pitAlarmEnabled", value: "No Data", isStateChange: true)
+    if (currentValue("pitAlarmTemp") == "Device Offline" || currentValue("pitAlarmTemp")) sendEvent(name: "pitAlarmTemp", value: "No Data", isStateChange: true)
+    if (currentValue("contact") == "Device Offline" || currentValue("contact") == null) sendEvent(name: "contact", value: "No Data", isStateChange: true)
 
+    def probe1Child = getChildDevice(getFlamebossProbeID(1))  
+    def probe2Child = getChildDevice(getFlamebossProbeID(2)) 
+    def probe3Child = getChildDevice(getFlamebossProbeID(3)) 
+                
+    if (probe1Child) probe1Child.turnOnDevice()
+    if (probe2Child) probe2Child.turnOnDevice()
+    if (probe3Child) probe3Child.turnOnDevice()
+}
 
 def topicNameCommand() {
     return "flameboss/${deviceID}/recv"   
@@ -307,3 +392,4 @@ def logDebug(msg)
         log.debug(msg)
     }
 }  
+
