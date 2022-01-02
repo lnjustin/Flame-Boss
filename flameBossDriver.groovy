@@ -13,7 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  *  Change History:
-
+ * v1.0.0 - iniital release
 **/
 
 import groovy.json.*
@@ -51,7 +51,7 @@ preferences
         
         input name: "deviceID", type: "String", title: "Flameboss Device ID", required: true
         input name: "flamebossServer", type: "String", title: "Flameboss Server Name", required: true
-        input name: "username", type: "String", title: "Flameboss Username", required: true
+        input name: "userID", type: "String", title: "Flameboss UserID", required: true
         input name: "authToken", type: "String", title: "Auth Token", required: true
         input name: "units", type: "enum", options:["Celcius", "Fahrenheit"], title: "Units", defaultValue: "Fahrenheit"
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
@@ -84,7 +84,7 @@ def initialize() {
         interfaces.mqtt.disconnect()
     } 
     turnOffDevices()
-    if (deviceID != null && flamebossServer != null && username != null && authToken != null) runIn(1, connectToMqtt)
+    if (deviceID != null && flamebossServer != null && userID != null && authToken != null) runIn(1, connectToMqtt)
     else log.error "Missing credentials for Flameboss. Input credentials in the Preferences section of the device."
 }
 
@@ -308,7 +308,7 @@ def connectToMqtt() {
     
     if (!interfaces.mqtt.isConnected()) {        
         logDebug("Connecting to MQTT...")
-        interfaces.mqtt.connect("tcp://${flamebossServer}:1883", device.getDeviceNetworkId() + "driver", "T-" + username, authToken)
+        interfaces.mqtt.connect("tcp://${flamebossServer}:1883", device.getDeviceNetworkId() + "driver", "T-" + userID, authToken)
         
         runIn(1, subscribe)
     }
@@ -392,4 +392,3 @@ def logDebug(msg)
         log.debug(msg)
     }
 }  
-
